@@ -23,21 +23,32 @@ const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 console.log("✅ GROQ_API_KEY loaded:", !!process.env.GROQ_API_KEY);
 console.log("✅ YOUTUBE_API_KEY loaded:", !!process.env.YOUTUBE_API_KEY);
 
-// 🔍 Helper: Search YouTube Music
+// 🔍 Mood → Genre mapping (fallback if Groq fails)
+const moodGenreMap = {
+  happy: "upbeat pop songs",
+  sad: "acoustic emotional songs",
+  angry: "rock or metal songs",
+  energetic: "edm dance tracks",
+  relaxed: "lofi chill beats",
+  romantic: "love ballads",
+  focused: "instrumental study music",
+};
+
+// 🔍 YouTube Search Helper (returns a random video from top 5)
 async function searchYouTubeMusic(query) {
   const response = await fetch(
-    `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=1&q=${encodeURIComponent(
+    `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=5&q=${encodeURIComponent(
       query
     )}&key=${process.env.YOUTUBE_API_KEY}`
   );
   const data = await response.json();
 
   if (data.items && data.items.length > 0) {
-    const video = data.items[0];
+    const video = data.items[Math.floor(Math.random() * data.items.length)];
     return `https://www.youtube.com/watch?v=${video.id.videoId}`;
   }
 
-  // fallback → lofi beats live stream
+  // fallback → lofi beats
   return "https://www.youtube.com/watch?v=5qap5aO4i9A";
 }
 
@@ -48,20 +59,24 @@ app.post("/mood", async (req, res) => {
 
     console.log("📩 Incoming request:", req.body);
 
-    // 1. Send user thoughts to Groq
+    // 1. Ask Groq to classify mood
     const completion = await groq.chat.completions.create({
       model: "llama-3.1-8b-instant",
       messages: [
         {
           role: "system",
           content: `You are a music mood classifier. 
-          Given the user's thoughts, return JSON with:
-          - mood (1 word, lowercase)
-          - keywords (2-3 words array)
-          - genre (music style)
-          - search (a music search query)
-          -search (a concise search query for YouTube songs, avoid live/lofi/non-stop mixes)
-          The search must return specific songs, not continuous live streams.`,
+          Given the user's thoughts, return ONLY valid JSON like this:
+          {
+            "mood": "happy",
+            "genre": "pop",
+            "search": "happy pop songs"
+          }
+          Rules:
+          - mood must be 1 lowercase word.
+          - genre must be a real music genre.
+          - search must include specific songs/artists (avoid "live/lofi/24x7").
+          - focus on single songs, not nonstop mixes.`,
         },
         {
           role: "user",
@@ -77,16 +92,16 @@ app.post("/mood", async (req, res) => {
     try {
       moodData = JSON.parse(aiReply);
     } catch {
-      // fallback if Groq response is not JSON
+      // fallback if Groq fails
+      const fallbackMood = mood || "relaxed";
       moodData = {
-        mood: mood || "chill",
-        keywords: ["music"],
-        genre: "pop",
-        search: "popular songs",
+        mood: fallbackMood,
+        genre: moodGenreMap[fallbackMood] || "pop",
+        search: moodGenreMap[fallbackMood] || "popular songs",
       };
     }
 
-    // 2. Add language to search query
+    // 2. Add language filter
     let searchQuery = moodData.search;
     if (language && language !== "other") {
       searchQuery += ` ${language} songs`;
@@ -95,11 +110,10 @@ app.post("/mood", async (req, res) => {
     // 3. Search YouTube
     const songUrl = await searchYouTubeMusic(searchQuery);
 
-    // 4. Return response
+    // 4. Send response
     res.json({
       input: thoughts,
       mood: moodData.mood,
-      keywords: moodData.keywords,
       genre: moodData.genre,
       language,
       searchQuery,
